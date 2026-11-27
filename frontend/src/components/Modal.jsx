@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 
-export default function Modal({ isOpen, onClose, title, children, wide, demoNote = true }) {
+export default function Modal({ isOpen, onClose, title, children, wide }) {
   useEffect(() => {
     if (!isOpen) return;
     function handleKeyDown(e) {
@@ -44,21 +44,6 @@ export default function Modal({ isOpen, onClose, title, children, wide, demoNote
               </button>
             </div>
             {children}
-            {demoNote && (
-              <div
-                style={{
-                  padding: '6px 24px',
-                  background: 'var(--stone-bg)',
-                  borderTop: '1px solid var(--border-subtle)',
-                  fontSize: '0.643rem',
-                  color: 'var(--text-tertiary)',
-                  textAlign: 'right',
-                  letterSpacing: '0.02em',
-                }}
-              >
-                Frontend demo session · Records held in local memory
-              </div>
-            )}
           </motion.div>
         </motion.div>
       )}

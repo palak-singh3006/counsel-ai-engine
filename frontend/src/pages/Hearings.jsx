@@ -1,33 +1,75 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Clock, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal';
 import { useToast } from '../components/Toast';
-import { hearings as initialHearings, cases } from '../data/mockData';
+import { hearingService, caseService, extractErrorMessage } from '../services/api';
 
 const hearingTypes = ['Arguments', 'Evidence', 'Hearing', 'Admission', 'Conciliation', 'Order'];
 
 export default function Hearings() {
   const toast = useToast();
   const navigate = useNavigate();
-  const [hearingList, setHearingList] = useState(initialHearings);
+  const [hearingList, setHearingList] = useState([]);
+  const [casesList, setCasesList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
   const [view, setView] = useState('agenda');
   const [showAdd, setShowAdd] = useState(false);
   const [showDetail, setShowDetail] = useState(null);
   const [selectedDay, setSelectedDay] = useState(null);
 
-  // Form
-  const emptyForm = { caseId: '', date: '', time: '', court: '', type: 'Hearing', notes: '' };
+  const now = new Date();
+  const [calYear, setCalYear] = useState(now.getFullYear());
+  const [calMonth, setCalMonth] = useState(now.getMonth()); // 0-indexed
+
+  const emptyForm = { caseId: '', date: '', time: '10:30', court: '', judge: '', type: 'Hearing', notes: '' };
   const [form, setForm] = useState(emptyForm);
   const [errors, setErrors] = useState({});
 
-  // Group hearings by date
+  const fetchHearingsAndCases = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [hearingsRes, casesRes] = await Promise.all([
+        hearingService.getAll(),
+        caseService.getAll(),
+      ]);
+      setHearingList(hearingsRes.data?.data || []);
+      setCasesList(casesRes.data?.data || []);
+    } catch (err) {
+      toast(extractErrorMessage(err, 'Failed to load hearings'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([hearingService.getAll(), caseService.getAll()])
+      .then(([hearingsRes, casesRes]) => {
+        if (!active) return;
+        setHearingList(hearingsRes.data?.data || []);
+        setCasesList(casesRes.data?.data || []);
+      })
+      .catch((err) => {
+        if (active) toast(extractErrorMessage(err, 'Failed to load hearings'), 'error');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [toast]);
+
   const grouped = useMemo(() => {
     const groups = {};
     hearingList.forEach((h) => {
-      if (!groups[h.date]) groups[h.date] = [];
-      groups[h.date].push(h);
+      const dateKey = h.date || h.hearing_date;
+      if (!groups[dateKey]) groups[dateKey] = [];
+      groups[dateKey].push(h);
     });
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   }, [hearingList]);
@@ -37,9 +79,7 @@ export default function Hearings() {
     const today = new Date();
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
-
     const fmt = d.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-
     if (d.toDateString() === today.toDateString()) return `Today — ${fmt}`;
     if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow — ${fmt}`;
     return fmt;
@@ -56,32 +96,58 @@ export default function Hearings() {
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!validate()) return;
-    const selectedCase = cases.find((c) => c.id === form.caseId);
-    const newHearing = {
-      id: `H${String(hearingList.length + 1).padStart(3, '0')}`,
-      caseId: form.caseId,
-      caseTitle: selectedCase?.title || '',
-      client: selectedCase?.client || '',
-      court: form.court || selectedCase?.court || '',
-      date: form.date,
-      time: form.time,
-      type: form.type,
-      status: 'upcoming',
-      notes: form.notes,
-    };
-    setHearingList((prev) => [...prev, newHearing]);
-    toast('Hearing scheduled successfully', 'success');
-    setShowAdd(false);
-    setForm(emptyForm);
-    setErrors({});
+    setSaving(true);
+    try {
+      await hearingService.create({
+        case_id: form.caseId,
+        hearing_date: form.date,
+        hearing_time: form.time,
+        court_name: form.court || undefined,
+        judge_name: form.judge || undefined,
+        hearing_type: form.type,
+        notes: form.notes,
+      });
+      toast('Hearing scheduled successfully', 'success');
+      setShowAdd(false);
+      setForm(emptyForm);
+      setErrors({});
+      await fetchHearingsAndCases();
+    } catch (err) {
+      toast(extractErrorMessage(err, 'Failed to schedule hearing'), 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // Calendar logic
-  const daysInMonth = 30;
-  const firstDay = new Date(2024, 10, 1).getDay(); // Friday = 5
-  const hearingDates = new Set(hearingList.map((h) => h.date));
+  const handleUpdateStatus = async (hearing, status) => {
+    try {
+      const res = await hearingService.update(hearing.id, { status });
+      toast(`Hearing marked as ${status}`, 'success');
+      setShowDetail(res.data?.data || { ...hearing, status });
+      await fetchHearingsAndCases();
+    } catch (err) {
+      toast(extractErrorMessage(err, 'Failed to update hearing'), 'error');
+    }
+  };
+
+  const handleDelete = async (hearing) => {
+    try {
+      await hearingService.delete(hearing.id);
+      toast('Hearing removed from calendar', 'info');
+      setShowDetail(null);
+      await fetchHearingsAndCases();
+    } catch (err) {
+      toast(extractErrorMessage(err, 'Failed to delete hearing'), 'error');
+    }
+  };
+
+  // Dynamic calendar logic
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const monthPrefix = `${calYear}-${String(calMonth + 1).padStart(2, '0')}`;
+  const hearingDates = new Set(hearingList.map((h) => h.date || h.hearing_date));
   const todayStr = new Date().toISOString().split('T')[0];
 
   const calendarDays = [];
@@ -89,12 +155,36 @@ export default function Hearings() {
   for (let d = 1; d <= daysInMonth; d++) calendarDays.push(d);
 
   const dayHearings = selectedDay
-    ? hearingList.filter((h) => h.date === `2024-11-${String(selectedDay).padStart(2, '0')}`)
+    ? hearingList.filter((h) => (h.date || h.hearing_date) === `${monthPrefix}-${String(selectedDay).padStart(2, '0')}`)
     : [];
+
+  const prevMonth = () => {
+    setSelectedDay(null);
+    if (calMonth === 0) {
+      setCalMonth(11);
+      setCalYear((y) => y - 1);
+    } else {
+      setCalMonth((m) => m - 1);
+    }
+  };
+
+  const nextMonth = () => {
+    setSelectedDay(null);
+    if (calMonth === 11) {
+      setCalMonth(0);
+      setCalYear((y) => y + 1);
+    } else {
+      setCalMonth((m) => m + 1);
+    }
+  };
+
+  const monthLabel = new Date(calYear, calMonth, 1).toLocaleDateString('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  });
 
   return (
     <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-      {/* Header */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Hearing Calendar</h1>
@@ -107,7 +197,6 @@ export default function Hearings() {
         </div>
       </div>
 
-      {/* View Toggle */}
       <div className="tabs" style={{ marginBottom: 'var(--space-6)' }}>
         <button className={`tab ${view === 'agenda' ? 'active' : ''}`} onClick={() => setView('agenda')}>
           Agenda
@@ -117,112 +206,95 @@ export default function Hearings() {
         </button>
       </div>
 
-      {/* Agenda View */}
-      {view === 'agenda' && (
+      {loading ? (
+        <div className="card" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+          Loading hearing calendar...
+        </div>
+      ) : view === 'agenda' ? (
         <div>
-          {grouped.map(([date, items]) => (
-            <div key={date} style={{ marginBottom: 'var(--space-6)' }}>
-              <div
-                style={{
-                  fontSize: '0.786rem',
-                  fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.06em',
-                  color: isToday(date) ? 'var(--brass-muted)' : 'var(--text-tertiary)',
-                  marginBottom: 'var(--space-3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                {isToday(date) && (
-                  <span
-                    style={{
-                      width: '6px',
-                      height: '6px',
-                      borderRadius: '50%',
-                      background: 'var(--brass)',
-                    }}
-                  />
-                )}
-                {getDateLabel(date)}
-              </div>
-              <div className="card">
-                {items.map((h, i) => (
-                  <div
-                    key={h.id}
-                    onClick={() => setShowDetail(h)}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '70px 1fr auto',
-                      gap: '16px',
-                      padding: '14px 20px',
-                      borderBottom: i < items.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-                      cursor: 'pointer',
-                      background: isToday(date) ? 'rgba(184,150,62,0.03)' : 'transparent',
-                      borderLeft: isToday(date) ? '3px solid var(--brass)' : '3px solid transparent',
-                      transition: 'background 0.15s',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--stone-bg)')}
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.background = isToday(date) ? 'rgba(184,150,62,0.03)' : 'transparent')
-                    }
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Clock size={13} style={{ color: 'var(--text-tertiary)' }} />
-                      <span style={{ fontSize: '0.857rem', fontWeight: 600, color: isToday(date) ? 'var(--brass-muted)' : 'var(--text-secondary)' }}>
-                        {h.time}
-                      </span>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.929rem', fontWeight: 500 }}>{h.caseTitle}</div>
-                      <div className="text-caption" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
-                        <span>{h.client}</span>
-                        <span style={{ color: 'var(--stone-light)' }}>·</span>
-                        <span>{h.court}</span>
+          {grouped.length === 0 ? (
+            <div className="card" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+              No hearings scheduled yet. Click &ldquo;Add Hearing&rdquo; to schedule a court appearance.
+            </div>
+          ) : (
+            grouped.map(([date, items]) => (
+              <div key={date} style={{ marginBottom: 'var(--space-6)' }}>
+                <div
+                  style={{
+                    fontSize: '0.786rem',
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    color: isToday(date) ? 'var(--brass-muted)' : 'var(--text-tertiary)',
+                    marginBottom: 'var(--space-3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {isToday(date) && (
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--brass)' }} />
+                  )}
+                  {getDateLabel(date)}
+                </div>
+                <div className="card">
+                  {items.map((h, i) => (
+                    <div
+                      key={h.id}
+                      onClick={() => setShowDetail(h)}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '70px 1fr auto',
+                        gap: '16px',
+                        padding: '14px 20px',
+                        borderBottom: i < items.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                        cursor: 'pointer',
+                        background: isToday(date) ? 'rgba(184,150,62,0.03)' : 'transparent',
+                        borderLeft: isToday(date) ? '3px solid var(--brass)' : '3px solid transparent',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Clock size={13} style={{ color: 'var(--text-tertiary)' }} />
+                        <span style={{ fontSize: '0.857rem', fontWeight: 600, color: isToday(date) ? 'var(--brass-muted)' : 'var(--text-secondary)' }}>
+                          {h.time}
+                        </span>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.929rem', fontWeight: 500 }}>{h.caseTitle}</div>
+                        <div className="text-caption" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                          <span>{h.client}</span>
+                          <span>·</span>
+                          <span>{h.court}</span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className="status-badge status-pending" style={{ fontSize: '0.643rem' }}>
+                          {h.type}
+                        </span>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className="status-badge status-pending" style={{ fontSize: '0.643rem' }}>
-                        {h.type}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
-      )}
-
-      {/* Calendar View */}
-      {view === 'calendar' && (
+      ) : (
         <div className="card">
           <div className="card-header">
-            <button className="btn btn-ghost btn-sm"><ChevronLeft size={16} /></button>
-            <span style={{ fontWeight: 600 }}>November 2024</span>
-            <button className="btn btn-ghost btn-sm"><ChevronRight size={16} /></button>
+            <button className="btn btn-ghost btn-sm" onClick={prevMonth}><ChevronLeft size={16} /></button>
+            <span style={{ fontWeight: 600 }}>{monthLabel}</span>
+            <button className="btn btn-ghost btn-sm" onClick={nextMonth}><ChevronRight size={16} /></button>
           </div>
           <div className="card-body">
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(7, 1fr)',
-                gap: '1px',
-                textAlign: 'center',
-              }}
-            >
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '1px', textAlign: 'center' }}>
               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
-                <div
-                  key={d}
-                  className="text-label"
-                  style={{ padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}
-                >
+                <div key={d} className="text-label" style={{ padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                   {d}
                 </div>
               ))}
               {calendarDays.map((day, i) => {
-                const dateStr = day ? `2024-11-${String(day).padStart(2, '0')}` : '';
+                const dateStr = day ? `${monthPrefix}-${String(day).padStart(2, '0')}` : '';
                 const hasHearing = hearingDates.has(dateStr);
                 const isTodayDate = dateStr === todayStr;
                 const isSelected = day === selectedDay;
@@ -237,8 +309,6 @@ export default function Hearings() {
                       background: isSelected ? 'var(--midnight)' : isTodayDate ? 'var(--brass-bg)' : 'transparent',
                       color: isSelected ? 'white' : isTodayDate ? 'var(--brass-muted)' : 'var(--text-primary)',
                       fontWeight: isTodayDate || isSelected ? 600 : 400,
-                      position: 'relative',
-                      transition: 'background 0.15s',
                     }}
                   >
                     {day || ''}
@@ -257,23 +327,16 @@ export default function Hearings() {
                 );
               })}
             </div>
-            {/* Hearings for selected day */}
             {selectedDay && (
               <div style={{ marginTop: '20px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
                 <div className="text-label" style={{ marginBottom: '12px' }}>
-                  Hearings on November {selectedDay}, 2024
+                  Hearings on {monthLabel.split(' ')[0]} {selectedDay}, {calYear}
                 </div>
                 {dayHearings.length > 0 ? (
                   dayHearings.map((h) => (
                     <div
                       key={h.id}
-                      style={{
-                        padding: '10px 16px',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: '6px',
-                        marginBottom: '8px',
-                        cursor: 'pointer',
-                      }}
+                      style={{ padding: '10px 16px', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginBottom: '8px', cursor: 'pointer' }}
                       onClick={() => setShowDetail(h)}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -303,13 +366,13 @@ export default function Hearings() {
               className={`form-input ${errors.caseId ? 'error' : ''}`}
               value={form.caseId}
               onChange={(e) => {
-                const c = cases.find((cs) => cs.id === e.target.value);
-                setForm({ ...form, caseId: e.target.value, court: c?.court || '' });
+                const c = casesList.find((cs) => cs.id === e.target.value);
+                setForm({ ...form, caseId: e.target.value, court: c?.court_name || '' });
               }}
             >
               <option value="">Select a case</option>
-              {cases.filter((c) => c.status !== 'closed').map((c) => (
-                <option key={c.id} value={c.id}>{c.title} ({c.id})</option>
+              {casesList.filter((c) => c.status !== 'closed').map((c) => (
+                <option key={c.id} value={c.id}>{c.title} ({c.case_number})</option>
               ))}
             </select>
             {errors.caseId && <div className="form-error">{errors.caseId}</div>}
@@ -349,13 +412,19 @@ export default function Hearings() {
             </div>
           </div>
           <div className="form-group">
+            <label className="form-label">Presiding Judge</label>
+            <input className="form-input" value={form.judge} onChange={(e) => setForm({ ...form, judge: e.target.value })} placeholder="Hon. Justice..." />
+          </div>
+          <div className="form-group">
             <label className="form-label">Notes</label>
             <textarea className="form-textarea" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Hearing notes..." rows={3} />
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={() => { setShowAdd(false); setForm(emptyForm); setErrors({}); }}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSubmit}>Schedule Hearing</button>
+          <button className="btn btn-primary" onClick={handleSubmit} disabled={saving}>
+            {saving ? 'Scheduling...' : 'Schedule Hearing'}
+          </button>
         </div>
       </Modal>
 
@@ -366,25 +435,16 @@ export default function Hearings() {
             <div className="modal-body">
               <div style={{ marginBottom: '20px' }}>
                 <div
-                  style={{
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: '1.143rem',
-                    marginBottom: '4px',
-                    color: 'var(--brass-muted)',
-                    cursor: 'pointer',
-                    textDecoration: 'underline',
-                    textUnderlineOffset: '2px',
-                  }}
+                  style={{ fontFamily: 'var(--font-serif)', fontSize: '1.143rem', marginBottom: '4px', color: 'var(--brass-muted)', cursor: 'pointer', textDecoration: 'underline' }}
                   onClick={() => {
                     const caseId = showDetail.caseId;
                     setShowDetail(null);
                     navigate('/matters', { state: { selectedCaseId: caseId } });
                   }}
-                  title="Click to view matter dossier"
                 >
                   {showDetail.caseTitle} &rarr;
                 </div>
-                <div className="text-caption">{showDetail.caseId} · Click title to view matter</div>
+                <div className="text-caption">{showDetail.caseNumber} · Click title to view matter</div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                 <div>
@@ -411,9 +471,16 @@ export default function Hearings() {
                 </div>
                 <div>
                   <div className="text-label" style={{ marginBottom: '4px' }}>Status</div>
-                  <span className={`status-badge status-${showDetail.status === 'today' ? 'pending' : 'active'}`}>
-                    {showDetail.status === 'today' ? 'Today' : 'Upcoming'}
-                  </span>
+                  <select
+                    className="filter-select"
+                    value={showDetail.status}
+                    onChange={(e) => handleUpdateStatus(showDetail, e.target.value)}
+                  >
+                    <option value="today">today</option>
+                    <option value="upcoming">upcoming</option>
+                    <option value="completed">completed</option>
+                    <option value="adjourned">adjourned</option>
+                  </select>
                 </div>
               </div>
               {showDetail.notes && (
@@ -426,16 +493,8 @@ export default function Hearings() {
               )}
             </div>
             <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => {
-                  const caseId = showDetail.caseId;
-                  setShowDetail(null);
-                  navigate('/matters', { state: { selectedCaseId: caseId } });
-                }}
-              >
-                View Linked Matter &rarr;
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--terracotta)' }} onClick={() => handleDelete(showDetail)}>
+                <Trash2 size={14} /> Remove
               </button>
               <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
             </div>

@@ -12,7 +12,8 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { notifications as initialNotifications, user, cases, clients } from '../data/mockData';
+import { useAuth } from '../context/AuthContext';
+import { caseService, clientService, dashboardService } from '../services/api';
 import { useToast } from './Toast';
 
 const routeTitles = {
@@ -30,8 +31,11 @@ export default function Header({ onMenuClick }) {
   const location = useLocation();
   const navigate = useNavigate();
   const toast = useToast();
+  const { user, profile, logout } = useAuth();
 
-  const [notificationList, setNotificationList] = useState(initialNotifications);
+  const [notificationList, setNotificationList] = useState([]);
+  const [casesList, setCasesList] = useState([]);
+  const [clientsList, setClientsList] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -40,6 +44,51 @@ export default function Header({ onMenuClick }) {
   const notifRef = useRef(null);
   const profileRef = useRef(null);
   const searchRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    async function loadHeaderData() {
+      try {
+        const [casesRes, clientsRes, dashRes] = await Promise.all([
+          caseService.getAll(),
+          clientService.getAll(),
+          dashboardService.getStats(),
+        ]);
+        if (!active) return;
+
+        setCasesList(casesRes.data?.data || []);
+        setClientsList(clientsRes.data?.data || []);
+
+        const stats = dashRes.data?.data;
+        const derivedNotifs = [];
+        for (const h of stats?.todaysHearingsList || []) {
+          derivedNotifs.push({
+            id: `h-${h.id}`,
+            title: `Hearing today at ${h.time}`,
+            text: `${h.caseTitle} — ${h.court}`,
+            time: 'Today',
+            unread: true,
+          });
+        }
+        for (const p of stats?.overduePaymentsList || []) {
+          derivedNotifs.push({
+            id: `p-${p.id}`,
+            title: 'Payment pending / overdue',
+            text: `₹${Number(p.pendingBalance).toLocaleString('en-IN')} due — ${p.client || p.caseTitle}`,
+            time: p.status,
+            unread: true,
+          });
+        }
+        setNotificationList(derivedNotifs);
+      } catch {
+        // Silently degrade header search/notifications if offline
+      }
+    }
+    loadHeaderData();
+    return () => {
+      active = false;
+    };
+  }, [location.pathname]);
 
   const today = new Date().toLocaleDateString('en-IN', {
     weekday: 'long',
@@ -51,42 +100,39 @@ export default function Header({ onMenuClick }) {
   const pageTitle = routeTitles[location.pathname] || 'Dashboard';
   const unreadCount = notificationList.filter((n) => n.unread).length;
 
-  // Global search filtering
   const matchedCases = useMemo(() => {
     const q = searchValue.trim().toLowerCase();
     if (!q) return [];
-    return cases
+    return casesList
       .filter(
         (c) =>
-          c.title.toLowerCase().includes(q) ||
-          c.id.toLowerCase().includes(q) ||
-          c.client.toLowerCase().includes(q)
+          (c.title || '').toLowerCase().includes(q) ||
+          (c.case_number || '').toLowerCase().includes(q) ||
+          (c.client || '').toLowerCase().includes(q)
       )
       .slice(0, 4);
-  }, [searchValue]);
+  }, [searchValue, casesList]);
 
   const matchedClients = useMemo(() => {
     const q = searchValue.trim().toLowerCase();
     if (!q) return [];
-    return clients
+    return clientsList
       .filter(
         (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.email.toLowerCase().includes(q) ||
-          c.id.toLowerCase().includes(q)
+          (c.name || c.full_name || '').toLowerCase().includes(q) ||
+          (c.email || '').toLowerCase().includes(q) ||
+          (c.client_code || '').toLowerCase().includes(q)
       )
       .slice(0, 4);
-  }, [searchValue]);
+  }, [searchValue, clientsList]);
 
   const hasSearchResults = matchedCases.length > 0 || matchedClients.length > 0;
 
-  // Handle Mark All Read
   const handleMarkAllRead = () => {
     setNotificationList((prev) => prev.map((n) => ({ ...n, unread: false })));
     toast('All notifications marked as read', 'info');
   };
 
-  // Handle Notification Item Click
   const handleNotificationClick = (n) => {
     setNotificationList((prev) =>
       prev.map((item) => (item.id === n.id ? { ...item, unread: false } : item))
@@ -105,7 +151,6 @@ export default function Header({ onMenuClick }) {
     }
   };
 
-  // Handle Search Result Selection
   const handleSelectCase = (caseItem) => {
     setSearchValue('');
     setShowSearchResults(false);
@@ -118,7 +163,6 @@ export default function Header({ onMenuClick }) {
     navigate('/clients', { state: { selectedClientId: clientItem.id } });
   };
 
-  // Close dropdowns on click outside & Escape key
   useEffect(() => {
     function handleClick(e) {
       if (notifRef.current && !notifRef.current.contains(e.target)) {
@@ -148,6 +192,15 @@ export default function Header({ onMenuClick }) {
     };
   }, []);
 
+  const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email || 'Advocate';
+  const displayRole = profile?.role || 'Advocate';
+
+  const handleSignOut = async () => {
+    setShowProfile(false);
+    await logout();
+    toast('Signed out successfully', 'info');
+  };
+
   return (
     <header className="header">
       <div className="header-left">
@@ -155,9 +208,7 @@ export default function Header({ onMenuClick }) {
           <Menu size={20} />
         </button>
         <div className="header-breadcrumb">
-          <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>
-            Counsel
-          </span>
+          <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>Counsel</span>
           <span className="header-breadcrumb-sep">/</span>
           <span>{pageTitle}</span>
         </div>
@@ -208,7 +259,7 @@ export default function Header({ onMenuClick }) {
                               </div>
                               <div style={{ minWidth: 0, overflow: 'hidden', flex: 1 }}>
                                 <div style={{ fontWeight: 500 }} className="truncate">{c.title}</div>
-                                <div className="text-caption truncate">{c.id} · {c.client}</div>
+                                <div className="text-caption truncate">{c.case_number || c.id} · {c.client}</div>
                               </div>
                             </div>
                             <ChevronRight size={13} style={{ color: 'var(--stone-light)', flexShrink: 0, marginLeft: '6px' }} />
@@ -231,8 +282,8 @@ export default function Header({ onMenuClick }) {
                                 <Users size={14} style={{ color: 'var(--stone)' }} />
                               </div>
                               <div style={{ minWidth: 0, overflow: 'hidden', flex: 1 }}>
-                                <div style={{ fontWeight: 500 }} className="truncate">{cl.name}</div>
-                                <div className="text-caption truncate">{cl.id} · {cl.type}</div>
+                                <div style={{ fontWeight: 500 }} className="truncate">{cl.name || cl.full_name}</div>
+                                <div className="text-caption truncate">{cl.client_code || cl.id} · {cl.type || cl.client_type}</div>
                               </div>
                             </div>
                             <ChevronRight size={13} style={{ color: 'var(--stone-light)', flexShrink: 0, marginLeft: '6px' }} />
@@ -291,18 +342,24 @@ export default function Header({ onMenuClick }) {
                     </span>
                   )}
                 </div>
-                {notificationList.map((n) => (
-                  <div
-                    key={n.id}
-                    className={`notification-item ${n.unread ? 'notification-unread' : ''}`}
-                    onClick={() => handleNotificationClick(n)}
-                    title="Click to view related section"
-                  >
-                    <div className="notification-title">{n.title}</div>
-                    <div className="text-caption">{n.text}</div>
-                    <div className="notification-time">{n.time}</div>
+                {notificationList.length > 0 ? (
+                  notificationList.map((n) => (
+                    <div
+                      key={n.id}
+                      className={`notification-item ${n.unread ? 'notification-unread' : ''}`}
+                      onClick={() => handleNotificationClick(n)}
+                      title="Click to view related section"
+                    >
+                      <div className="notification-title">{n.title}</div>
+                      <div className="text-caption">{n.text}</div>
+                      <div className="notification-time">{n.time}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="notification-item">
+                    <div className="text-caption">No active alerts or upcoming hearings today.</div>
                   </div>
-                ))}
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -338,10 +395,8 @@ export default function Header({ onMenuClick }) {
                     marginBottom: '4px',
                   }}
                 >
-                  <div style={{ fontSize: '0.857rem', fontWeight: 600 }}>
-                    {user.name}
-                  </div>
-                  <div className="text-caption">{user.role}</div>
+                  <div style={{ fontSize: '0.857rem', fontWeight: 600 }}>{displayName}</div>
+                  <div className="text-caption">{displayRole}</div>
                 </div>
                 <button
                   className="profile-dropdown-item"
@@ -364,10 +419,7 @@ export default function Header({ onMenuClick }) {
                 <button
                   className="profile-dropdown-item"
                   style={{ color: 'var(--terracotta)' }}
-                  onClick={() => {
-                    setShowProfile(false);
-                    toast('Session logout is disabled in demo mode', 'info');
-                  }}
+                  onClick={handleSignOut}
                 >
                   <LogOut /> Sign Out
                 </button>

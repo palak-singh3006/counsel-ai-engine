@@ -10,7 +10,7 @@ import {
   Brain,
   Settings,
 } from 'lucide-react';
-import { user } from '../data/mockData';
+import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -23,7 +23,20 @@ const navItems = [
 
 const aiItem = { path: '/ai-intelligence', label: 'AI Case Intelligence', icon: Brain };
 
+function getInitials(name) {
+  return String(name || 'AD')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((part) => part[0].toUpperCase())
+    .join('');
+}
+
 export default function Sidebar({ isOpen, onClose }) {
+  const { user, profile } = useAuth();
+  const displayName = profile?.full_name || user?.user_metadata?.full_name || 'Advocate';
+  const displayFirm = profile?.firm_name || user?.user_metadata?.firm_name || 'Counsel Chambers';
+  const displayRole = profile?.role || 'Advocate';
 
   return (
     <>
@@ -37,7 +50,7 @@ export default function Sidebar({ isOpen, onClose }) {
       >
         {/* Brand */}
         <div className="sidebar-brand">
-          <div className="sidebar-brand-name">JK Shukla & Associates</div>
+          <div className="sidebar-brand-name">{displayFirm}</div>
           <div className="sidebar-brand-product">Counsel</div>
           <div className="sidebar-brand-subtitle">Legal Practice Management</div>
         </div>
@@ -88,10 +101,10 @@ export default function Sidebar({ isOpen, onClose }) {
             <span>Settings</span>
           </NavLink>
           <div className="sidebar-profile" style={{ marginTop: '4px' }}>
-            <div className="sidebar-avatar">{user.initials}</div>
+            <div className="sidebar-avatar">{getInitials(displayName)}</div>
             <div className="sidebar-profile-info">
-              <div className="sidebar-profile-name">Advocate</div>
-              <div className="sidebar-profile-role">{user.role}</div>
+              <div className="sidebar-profile-name">{displayName}</div>
+              <div className="sidebar-profile-role">{displayRole}</div>
             </div>
           </div>
         </div>
