@@ -1,25 +1,51 @@
-# Python Virtual Environment
-.venv/
-venv/
-ENV/
+# ==========================================
+# Counsel Monorepo - Comprehensive .gitignore
+# ==========================================
 
-# Environment Variables & Secrets
+# Environment & Secrets (NEVER COMMIT)
 .env
 *.env
 !.env.example
+ai-engine/.env
+ai-engine/*.env
+!ai-engine/.env.example
+frontend/.env
+frontend/*.env
+!frontend/.env.example
 
-# Python Cache & Bytecode
+# Python
+.venv/
+venv/
+ENV/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
-# Testing & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
 
-# IDE & OS
+# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE & Operating System
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 .vscode/
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
